@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 
 # ===================== 核心配置 =====================
-BOT_TOKEN = "你的Telegram机器人Token"
+BOT_TOKEN = "7310129851:AAFsjT3xpqdAurqbk_VmNE3SdJ8NO-oms9w"
 VALID_GROUPS = ["组1", "组2", "组3", "组4"]
 DATA_PATH = "data.json"
 COMMISSION_RATE = 0.01  # 1%提成
@@ -207,3 +207,4 @@ if __name__ == "__main__":
     t2 = Thread(target=run_web)
     t1.start()
     t2.start()
+
