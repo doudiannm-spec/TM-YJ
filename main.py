@@ -8,6 +8,7 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Callb
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 import uvicorn
+from collections import defaultdict
 
 # ===================== 核心配置 =====================
 # 从环境变量读取Token，安全无泄露
@@ -77,6 +78,7 @@ def start(update: Update, context: CallbackContext):
         "/status - 查看全局统计数据\n"
         "/total - 查看累计总入账金额\n"
         "/group - 查看各小组明细统计\n"
+        "/user - 查看各入账人统计列表\n"
         "/clear - 清空所有记录（慎用）"
     )
     update.message.reply_text(msg)
@@ -149,7 +151,7 @@ def clear_data(update: Update, context: CallbackContext):
     save_data(default_data)
     update.message.reply_text("🗑️ 所有记录已清空！")
 
-# 新增：按组别统计功能
+# 按组别统计功能
 def get_group_stats(update: Update, context: CallbackContext):
     data = load_data()
     records = data["records"]
@@ -183,6 +185,39 @@ def get_group_stats(update: Update, context: CallbackContext):
             f"累计提成：{stats['commission']:.2f} 元\n"
             f"累计实发：{stats['net']:.2f} 元\n\n"
         )
+    update.message.reply_text(msg)
+
+# 新增：按入账人统计功能
+def get_user_stats(update: Update, context: CallbackContext):
+    data = load_data()
+    records = data["records"]
+    # 自动初始化用户统计数据
+    user_stats = defaultdict(lambda: {"income": 0.0, "commission": 0.0, "net": 0.0})
+
+    # 遍历记录，按操作人汇总数据
+    for r in records:
+        user = r["operator"]
+        if r["type"] == "+":
+            user_stats[user]["income"] += r["amount"]
+            user_stats[user]["commission"] += r["this_commission"]
+            user_stats[user]["net"] += r["this_net_salary"]
+        else:
+            user_stats[user]["income"] -= r["amount"]
+            user_stats[user]["commission"] -= r["this_commission"]
+            user_stats[user]["net"] -= r["this_net_salary"]
+
+    # 生成回复消息
+    msg = "👤 各入账人统计列表\n\n"
+    if not user_stats:
+        msg += "暂无记账记录"
+    else:
+        for user, stats in user_stats.items():
+            msg += (
+                f"【{user}】\n"
+                f"累计入账：{stats['income']:.2f} 元\n"
+                f"累计提成：{stats['commission']:.2f} 元\n"
+                f"累计实发：{stats['net']:.2f} 元\n\n"
+            )
     update.message.reply_text(msg)
 
 # ===================== FastAPI网页账单 =====================
@@ -249,7 +284,8 @@ def run_bot():
     dp.add_handler(CommandHandler("status", get_status))
     dp.add_handler(CommandHandler("total", get_total_income))
     dp.add_handler(CommandHandler("clear", clear_data))
-    dp.add_handler(CommandHandler("group", get_group_stats)) # 注册分组统计命令
+    dp.add_handler(CommandHandler("group", get_group_stats))
+    dp.add_handler(CommandHandler("user", get_user_stats))  # 注册入账人统计命令
     # 注册普通消息处理器
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, add_record))
     updater.start_polling()
