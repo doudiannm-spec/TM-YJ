@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 
 # ===================== 核心配置 =====================
+# 从环境变量读取Token，安全无泄露
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 VALID_GROUPS = ["组1", "组2", "组3", "组4"]
 DATA_PATH = "data.json"
@@ -47,7 +48,7 @@ def parse_bill(text: str):
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
     
-    # 兼容旧格式：组1+10000+天明
+    # 兼容旧格式：组1+10000+天明 / 组2-500+李四
     pattern_old = r"^(组[1-4])([+-])(\d+\.?\d*)\+(.+)$"
     match_old = re.match(pattern_old, text.strip())
     if match_old:
@@ -67,14 +68,16 @@ def parse_bill(text: str):
 def start(update: Update, context: CallbackContext):
     msg = (
         "📊 团队记账机器人已启动\n"
-        "使用格式：\n"
-        "组1/10000+10000+5000/张三 （多笔金额叠加收入）\n"
-        "组1+10000+张三 （单笔收入）\n"
-        "组2-500+李四 （支出）\n\n"
-        "指令：\n"
-        "/status - 查看当前总入账和实发工资\n"
-        "/total - 查看所有记录的总入账金额\n"
-        "/clear - 清空所有记录（管理员慎用）"
+        "支持格式：\n"
+        "1. 多笔叠加收入：组X/金额+金额+.../入款人  例：组1/10000+5000/天明\n"
+        "2. 单笔收入：组X+金额+入款人  例：组1+10000+天明\n"
+        "3. 支出记录：组X-金额+入款人  例：组2-500+李四\n\n"
+        "指令列表：\n"
+        "/start - 查看使用说明\n"
+        "/status - 查看全局统计数据\n"
+        "/total - 查看累计总入账金额\n"
+        "/group - 查看各小组明细统计\n"
+        "/clear - 清空所有记录（慎用）"
     )
     update.message.reply_text(msg)
 
@@ -82,7 +85,7 @@ def add_record(update: Update, context: CallbackContext):
     text = update.message.text
     result = parse_bill(text)
     if not result:
-        update.message.reply_text("❌ 格式错误！请使用：组X/金额+金额+.../入款人 或 组X+金额+入款人 或 组X-金额+入款人")
+        update.message.reply_text("❌ 格式错误！请使用支持的记账格式")
         return
 
     data = load_data()
@@ -127,7 +130,7 @@ def add_record(update: Update, context: CallbackContext):
 def get_status(update: Update, context: CallbackContext):
     data = load_data()
     msg = (
-        "📈 当前工资统计\n"
+        "📈 当前全局统计\n"
         f"总入账金额：{data['total_income']:.2f} 元\n"
         f"实发工资（扣5%佣金）：{data['net_salary']:.2f} 元"
     )
@@ -145,6 +148,42 @@ def clear_data(update: Update, context: CallbackContext):
     default_data = {"records": [], "total_commission": 0.0, "net_salary": 0.0, "total_income": 0.0}
     save_data(default_data)
     update.message.reply_text("🗑️ 所有记录已清空！")
+
+# 新增：按组别统计功能
+def get_group_stats(update: Update, context: CallbackContext):
+    data = load_data()
+    records = data["records"]
+    
+    # 初始化每个组的统计数据
+    group_stats = {
+        "组1": {"income": 0.0, "commission": 0.0, "net": 0.0},
+        "组2": {"income": 0.0, "commission": 0.0, "net": 0.0},
+        "组3": {"income": 0.0, "commission": 0.0, "net": 0.0},
+        "组4": {"income": 0.0, "commission": 0.0, "net": 0.0}
+    }
+    
+    # 遍历所有记录，按组汇总计算
+    for r in records:
+        group = r["group"]
+        if r["type"] == "+":
+            group_stats[group]["income"] += r["amount"]
+            group_stats[group]["commission"] += r["this_commission"]
+            group_stats[group]["net"] += r["this_net_salary"]
+        else:
+            group_stats[group]["income"] -= r["amount"]
+            group_stats[group]["commission"] -= r["this_commission"]
+            group_stats[group]["net"] -= r["this_net_salary"]
+    
+    # 生成统计消息
+    msg = "📊 各小组入账与工资统计\n\n"
+    for group, stats in group_stats.items():
+        msg += (
+            f"【{group}】\n"
+            f"总入账：{stats['income']:.2f} 元\n"
+            f"累计提成：{stats['commission']:.2f} 元\n"
+            f"累计实发：{stats['net']:.2f} 元\n\n"
+        )
+    update.message.reply_text(msg)
 
 # ===================== FastAPI网页账单 =====================
 app = FastAPI(title="记账账单看板")
@@ -205,10 +244,13 @@ def bill_page():
 def run_bot():
     updater = Updater(BOT_TOKEN)
     dp = updater.dispatcher
+    # 注册所有命令
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("status", get_status))
     dp.add_handler(CommandHandler("total", get_total_income))
     dp.add_handler(CommandHandler("clear", clear_data))
+    dp.add_handler(CommandHandler("group", get_group_stats)) # 注册分组统计命令
+    # 注册普通消息处理器
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, add_record))
     updater.start_polling()
     updater.idle()
