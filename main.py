@@ -31,29 +31,48 @@ def save_data(data):
 
 # ===================== 消息解析 =====================
 def parse_bill(text: str):
-    pattern = r"^(组[1-4])([+-])(\d+\.?\d*)\+(.+)$"
-    match = re.match(pattern, text.strip())
-    if not match:
-        return None
-    group, typ, amount, user = match.groups()
-    amount = float(amount)
-    return {
-        "group": group,
-        "type": typ,
-        "amount": amount,
-        "operator": user,
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
+    # 支持新格式：组1/10000+10000+10000/天明
+    pattern_new = r"^(组[1-4])\/([\d+]+)\/(.+)$"
+    match_new = re.match(pattern_new, text.strip())
+    if match_new:
+        group, amount_str, user = match_new.groups()
+        # 拆分金额并累加
+        amounts = list(map(float, amount_str.split("+")))
+        total_amount = sum(amounts)
+        return {
+            "group": group,
+            "type": "+",
+            "amount": total_amount,
+            "operator": user,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    
+    # 兼容旧格式：组1+10000+天明
+    pattern_old = r"^(组[1-4])([+-])(\d+\.?\d*)\+(.+)$"
+    match_old = re.match(pattern_old, text.strip())
+    if match_old:
+        group, typ, amount, user = match_old.groups()
+        amount = float(amount)
+        return {
+            "group": group,
+            "type": typ,
+            "amount": amount,
+            "operator": user,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    
+    return None
 
 # ===================== Telegram机器人逻辑 =====================
 def start(update: Update, context: CallbackContext):
     msg = (
         "📊 团队记账机器人已启动\n"
         "使用格式：\n"
-        "组1+1000+张三 （记录收入）\n"
-        "组2-500+李四 （记录支出）\n\n"
+        "组1/10000+10000+5000/张三 （多笔金额叠加收入）\n"
+        "组1+10000+张三 （单笔收入）\n"
+        "组2-500+李四 （支出）\n\n"
         "指令：\n"
-        "/status - 查看当前总提成和实发工资\n"
+        "/status - 查看当前总入账和实发工资\n"
         "/total - 查看所有记录的总入账金额\n"
         "/clear - 清空所有记录（管理员慎用）"
     )
@@ -63,7 +82,7 @@ def add_record(update: Update, context: CallbackContext):
     text = update.message.text
     result = parse_bill(text)
     if not result:
-        update.message.reply_text("❌ 格式错误！请使用：组X+金额+入款人 或 组X-金额+入款人")
+        update.message.reply_text("❌ 格式错误！请使用：组X/金额+金额+.../入款人 或 组X+金额+入款人 或 组X-金额+入款人")
         return
 
     data = load_data()
@@ -71,34 +90,28 @@ def add_record(update: Update, context: CallbackContext):
     add_net = 0.0
     add_income = 0.0
 
-    # 只有收入（+）才计算提成和增加总入账
     if result["type"] == "+":
         raw_amount = result["amount"]
         add_commission = raw_amount * COMMISSION_RATE
         add_net = raw_amount * NET_RATE
         add_income = raw_amount
-    # 支出（-）不计算提成，也不增加总入账
     else:
-        raw_amount = -result["amount"]  # 支出金额为负，取绝对值
-        add_commission = -raw_amount * COMMISSION_RATE  # 扣除对应提成
-        add_net = -raw_amount * NET_RATE  # 扣除对应实发工资
+        raw_amount = -result["amount"]
+        add_commission = -raw_amount * COMMISSION_RATE
+        add_net = -raw_amount * NET_RATE
 
-    # 写入记录
     record = {
         **result,
         "this_commission": round(add_commission, 2),
         "this_net_salary": round(add_net, 2)
     }
     data["records"].append(record)
-
-    # 更新累计统计
     data["total_commission"] = round(data["total_commission"] + add_commission, 2)
     data["net_salary"] = round(data["net_salary"] + add_net, 2)
     data["total_income"] = round(data["total_income"] + add_income, 2)
 
     save_data(data)
 
-    # 回复用户
     reply = (
         f"✅ 记账成功！\n"
         f"组别：{result['group']}\n"
@@ -106,7 +119,7 @@ def add_record(update: Update, context: CallbackContext):
         f"操作人：{result['operator']}\n"
         f"本次提成：{add_commission:.2f}\n"
         f"本次实发：{add_net:.2f}\n\n"
-        f"累计总提成：{data['total_commission']:.2f}\n"
+        f"总入账金额：{data['total_income']:.2f}\n"
         f"累计实发工资：{data['net_salary']:.2f}"
     )
     update.message.reply_text(reply)
@@ -115,8 +128,8 @@ def get_status(update: Update, context: CallbackContext):
     data = load_data()
     msg = (
         "📈 当前工资统计\n"
-        f"总提成（1%）：{data['total_commission']:.2f}\n"
-        f"实发工资（扣5%佣金）：{data['net_salary']:.2f}"
+        f"总入账金额：{data['total_income']:.2f} 元\n"
+        f"实发工资（扣5%佣金）：{data['net_salary']:.2f} 元"
     )
     update.message.reply_text(msg)
 
@@ -194,7 +207,7 @@ def run_bot():
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("status", get_status))
-    dp.add_handler(CommandHandler("total", get_total_income))  # 新增命令
+    dp.add_handler(CommandHandler("total", get_total_income))
     dp.add_handler(CommandHandler("clear", clear_data))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, add_record))
     updater.start_polling()
@@ -208,5 +221,3 @@ if __name__ == "__main__":
     t2 = Thread(target=run_web)
     t1.start()
     t2.start()
-
-
